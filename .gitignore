@@ -1,0 +1,43 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Dependencies
+node_modules/
+**/node_modules/
+vendor/
+**/vendor/
+
+# Laravel cache and runtime files
+**/.phpunit.result.cache
+**/bootstrap/cache/*.php
+**/storage/logs/*
+**/storage/framework/cache/**
+**/storage/framework/sessions/**
+**/storage/framework/testing/**
+**/storage/framework/views/*
+**/storage/app/private/ekspor/**
+
+# Database files
+**/database/*.sqlite
+**/database/*.sqlite-*
+
+# Build files
+**/public/build/
+**/public/hot
+
+# Logs
+*.log
+
+# Temporary and backup files
+*.backup
+*.bak
+*.tmp
+
+# Operating system
+.DS_Store
+Thumbs.db

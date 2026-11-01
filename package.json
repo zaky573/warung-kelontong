@@ -1,0 +1,11 @@
+{
+  "name": "warung-kelontong",
+  "private": true,
+  "description": "Monorepo studi kasus Warung Kelontong — kontrak API, kontrak event, dan layanan Laravel.",
+  "scripts": {
+    "lint:api": "spectral lint openapi/kasir-warung.yaml --ruleset .spectral.yaml"
+  },
+  "devDependencies": {
+    "@stoplight/spectral-cli": "^6.14.2"
+  }
+}

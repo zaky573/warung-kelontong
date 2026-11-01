@@ -1,0 +1,787 @@
+openapi: 3.0.3
+
+info:
+  title: Kasir Warung API
+  version: "1.0.0"
+  description: |
+    Kontrak antarmuka **Kasir Warung** (Point of Sale) pada studi kasus Warung Kelontong.
+
+    ## Mengapa design-first
+
+    Berkas ini disusun **sebelum implementasi** dan menjadi acuan bersama antara
+    pengembang layanan POS dan layanan Inventory Core Service. Bentuk respons tidak
+    boleh berubah tanpa memperbarui berkas ini lebih dulu, sehingga konsumen tidak
+    pernah dikejutkan oleh perubahan tak terdokumentasi.
+
+    ## Dua gaya integrasi berbeda dalam satu API
+
+    | Endpoint | Gaya | Karakteristik |
+    |---|---|---|
+    | `POST /api/v1/pesanan-whatsapp` | REST / RPC (sinkron) | Stok gudang divalidasi lebih dulu; pesanan baru dikonfirmasi. Memiliki ketergantungan waktu. |
+    | `POST /api/v1/penjualan` | Event-driven (asinkron) | Tidak memanggil gudang sama sekali. Transaksi tidak pernah terhambat oleh kondisi gudang. |
+
+    ## Galat memakai Problem Details RFC 7807
+
+    Setiap kegagalan dijawab dengan `Content-Type: application/problem+json` dan
+    medan baku `type`, `title`, `status`, `detail`, serta `instance` yang menunjuk
+    ke permintaan yang gagal.
+
+    > Perhatikan bahwa `status` di dalam bodi masalah adalah **kode HTTP**
+    > (mis. `409`), berbeda dari medan `status` pada respons sukses yang berisi
+    > status pesanan (mis. `"dikonfirmasi"`).
+
+    Empat jenis masalah yang dipakai:
+
+    | `type` | Status | Arti |
+    |---|---|---|
+    | `urn:warung-kelontong:masalah:stok-rak-kasir-kurang` | 409 | Stok rak di kasir tidak mencukupi |
+    | `urn:warung-kelontong:masalah:stok-gudang-kurang` | 409 | Stok gudang tidak mencukupi (hanya pada gaya RPC) |
+    | `urn:warung-kelontong:masalah:layanan-tidak-terjangkau` | 503 | Gudang tidak bisa dihubungi (hanya pada gaya RPC) |
+    | `urn:warung-kelontong:masalah:isian-tidak-valid` | 422 | Validasi isian gagal |
+
+    Jenis masalah memakai skema URN, bukan URL, supaya tetap sah sebagai pengenal
+    meski repositori ini dipindah ke host lain.
+
+    ## Rincian medan perluasan
+
+    RFC 7807 mengizinkan medan tambahan selama tidak menimpa medan baku.
+    Karena `detail` sudah terpakai, rincian per SKU diberi nama `sisa_stok`.
+
+    | Medan | Muncul pada | Bentuk |
+    |---|---|---|
+    | `sisa_stok` | 409 stok rak kasir & stok gudang | daftar rincian per SKU |
+    | `errors` | 422 validasi | pemetaan nama medan ke daftar pesan kesalahan |
+    | `saran` | 503 layanan offline | saran pemulihan untuk pemanggil |
+  contact:
+    name: Kelompok Warung Kelontong
+    email: zakypermana72@gmail.com
+    url: https://github.com/zaky573/warung-kelontong
+
+servers:
+  - url: http://localhost:8082
+    description: Lewat Docker Sail dari mesin pengembang
+  - url: http://kasir-warung.test
+    description: Dari dalam jaringan Docker (nama layanan Sail)
+
+tags:
+  - name: produk
+    description: Pembacaan dan pencatatan katalog barang yang dijual di warung.
+  - name: pesanan
+    description: Riwayat pesanan beserta rincian itemnya.
+  - name: integrasi-whatsapp
+    description: |
+      Titik integrasi 1 — WhatsApp Order System ke POS Backend Service.
+      Gaya REST / RPC: validasi stok berjalan **sinkron** sebelum pesanan dikonfirmasi.
+  - name: integrasi-kasir
+    description: |
+      Titik integrasi 2 — Aplikasi POS ke Inventory Core Service.
+      Gaya event-driven: **tanpa** panggilan sinkron apa pun ke gudang.
+
+paths:
+  /api/v1/produk:
+    get:
+      tags: [produk]
+      summary: Daftar semua produk
+      description: |
+        Mengembalikan seluruh katalog produk yang diurutkan menurut SKU.
+        Salinan `stok` di sini adalah stok rak di kasir, bukan stok gudang.
+      operationId: daftarProduk
+      responses:
+        "200":
+          description: Daftar produk berhasil dibaca.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RiwayatProduk"
+              example:
+                data:
+                  - id: 1
+                    sku: BRG-001
+                    nama: Beras Ramas 5 kg
+                    harga: 72000
+                    stok: 18
+                    created_at: "2026-10-31T06:47:12.000000Z"
+                    updated_at: "2026-10-31T06:47:12.000000Z"
+
+    post:
+      tags: [produk]
+      summary: Tambahkan produk baru
+      description: |
+        Mencatat produk baru ke katalog. SKU harus unik — pengulangan SKU
+        ditolak sebagai galat validasi 422, bukan sebagai konflik.
+      operationId: buatProduk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProdukBuatRequest"
+            example:
+              sku: BRG-001
+              nama: Beras Ramas 5 kg
+              harga: 72000
+              stok: 20
+      responses:
+        "201":
+          description: Produk berhasil ditambahkan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProdukBuatRespons"
+              example:
+                data:
+                  id: 1
+                  sku: BRG-001
+                  nama: Beras Ramas 5 kg
+                  harga: 72000
+                  stok: 20
+                  created_at: "2026-10-31T06:47:12.000000Z"
+                  updated_at: "2026-10-31T06:47:12.000000Z"
+        "422":
+          $ref: "#/components/responses/ValidasiGagal"
+
+  /api/v1/pesanan:
+    get:
+      tags: [pesanan]
+      summary: Riwayat pesanan terbaru
+      description: |
+        Mengembalikan pesanan yang diurutkan dari yang terbaru, lengkap dengan
+        rincian itemnya lewat relasi `items`.
+      operationId: daftarPesanan
+      responses:
+        "200":
+          description: Daftar pesanan berhasil dibaca.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RiwayatPesanan"
+              example:
+                data:
+                  - id: 7
+                    kode: POS-0007
+                    sumber: kasir
+                    metode_bayar: tunai
+                    pelanggan: null
+                    status: dikonfirmasi
+                    total: 144000
+                    terjadi_pada: "2026-10-31T06:47:12.000000Z"
+                    created_at: "2026-10-31T06:47:12.000000Z"
+                    updated_at: "2026-10-31T06:47:12.000000Z"
+                    items:
+                      - id: 7
+                        pesanan_id: 7
+                        sku: BRG-001
+                        jumlah: 2
+                        harga_satuan: 72000
+                        subtotal: 144000
+                        created_at: "2026-10-31T06:47:12.000000Z"
+                        updated_at: "2026-10-31T06:47:12.000000Z"
+
+  /api/v1/pesanan-whatsapp:
+    post:
+      tags: [integrasi-whatsapp]
+      summary: Catat pesanan dari WhatsApp (gaya RPC sinkron)
+      description: |
+        Titik integrasi 1. Layanan memanggil Inventory Core Service **secara
+        sinkron** untuk memvalidasi stok gudang sebelum pesanan dikonfirmasi
+        ke pelanggan.
+
+        Konsekuensi gaya RPC, tiga kegagalan mungkin terjadi:
+
+        1. **409 `stok-gudang-kurang`** — gudang menjawab bahwa stok tidak cukup.
+        2. **503 `layanan-tidak-terjangkau`** — gudang tidak bisa dihubungi sama
+           sekali, sehingga pesanan ditahan. Inilah ketergantungan waktu yang
+           melekat pada gaya RPC.
+        3. **409 `stok-rak-kasir-kurang`** — validasi gudang lulus, tetapi salinan
+           stok rak di kasir tidak mencukupi.
+
+        Jika gudang menyatakan tersedia, pesanan dicatat dan pembaruan stok gudang
+        disampaikan lewat antrean pesan, bukan lewat panggilan balik.
+      operationId: catatPesananWhatsapp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PesananWhatsappRequest"
+            example:
+              kode: WA-0001
+              pelanggan: Bu Ani
+              metode_bayar: tunai
+              items:
+                - sku: BRG-001
+                  jumlah: 2
+      responses:
+        "201":
+          description: Pesanan WhatsApp dikonfirmasi; pembaruan stok gudang menyusul lewat antrean pesan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PenjualanBerhasil"
+              example:
+                status: dikonfirmasi
+                kode: WA-0001
+                sumber: whatsapp
+                metode_bayar: tunai
+                pelanggan: Bu Ani
+                total: 144000
+                items:
+                  - sku: BRG-001
+                    jumlah: 2
+                    harga: 72000
+                    subtotal: 144000
+                pesan: Pesanan WhatsApp dikonfirmasi; stok gudang menyusul lewat antrean pesan.
+        "409":
+          $ref: "#/components/responses/StokGudangKurang"
+        "422":
+          $ref: "#/components/responses/ValidasiGagal"
+        "503":
+          $ref: "#/components/responses/LayananTidakTerjangkau"
+
+  /api/v1/penjualan:
+    post:
+      tags: [integrasi-kasir]
+      summary: Catat transaksi kasir (gaya event-driven asinkron)
+      description: |
+        Titik integrasi 2. Layanan **tidak memanggil** Inventory Core Service
+        sama sekali — transaksi langsung dicatat dari salinan stok rak di kasir,
+        lalu fakta transaksi diterbitkan sebagai event `TransaksiTercatat`.
+
+        Karena tidak ada panggilan sinkron, transaksi tidak pernah terhambat oleh
+        kondisi gudang. Gudang memperbarui stoknya sendiri dengan membaca event
+        tersebut dari antrean.
+
+        Satu-satunya kegagalan bisnis adalah 409 `stok-rak-kasir-kurang`.
+      operationId: catatPenjualanKasir
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PenjualanRequest"
+            example:
+              metode_bayar: tunai
+              items:
+                - sku: BRG-001
+                  jumlah: 2
+      responses:
+        "201":
+          description: Transaksi tercatat dan event berhasil diterbitkan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PenjualanBerhasil"
+              example:
+                status: dikonfirmasi
+                kode: POS-0007
+                sumber: kasir
+                metode_bayar: tunai
+                pelanggan: null
+                total: 144000
+                items:
+                  - sku: BRG-001
+                    jumlah: 2
+                    harga: 72000
+                    subtotal: 144000
+                pesan: Transaksi tercatat; pembaruan stok gudang berjalan di latar belakang.
+        "409":
+          $ref: "#/components/responses/StokRakKasirKurang"
+        "422":
+          $ref: "#/components/responses/ValidasiGagal"
+
+components:
+  schemas:
+    Produk:
+      type: object
+      description: Satu barang yang dijual di warung. `stok` adalah salinan stok rak di kasir.
+      required: [id, sku, nama, harga, stok, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Kunci primer otomatis.
+          example: 1
+        sku:
+          type: string
+          maxLength: 16
+          description: Kode barang yang unik di seluruh katalog.
+          example: BRG-001
+        nama:
+          type: string
+          maxLength: 100
+          example: Beras Ramas 5 kg
+        harga:
+          type: integer
+          minimum: 0
+          description: Harga satuan dalam rupiah.
+          example: 72000
+        stok:
+          type: integer
+          description: Salinan stok rak di kasir. Bukan stok gudang.
+          example: 18
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-10-31T06:47:12.000000Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2026-10-31T06:47:12.000000Z"
+
+    ProdukBuatRequest:
+      type: object
+      description: Isian untuk menambahkan produk baru.
+      required: [sku, nama, harga, stok]
+      properties:
+        sku:
+          type: string
+          maxLength: 16
+          description: Wajib unik. Pengulangan ditolak dengan 422.
+          example: BRG-001
+        nama:
+          type: string
+          maxLength: 100
+          example: Beras Ramas 5 kg
+        harga:
+          type: integer
+          minimum: 0
+          example: 72000
+        stok:
+          type: integer
+          minimum: 0
+          example: 20
+
+    ProdukBuatRespons:
+      type: object
+      description: Balasan 422 memakai `ProblemDetails`, bukan skema ini.
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/Produk"
+
+    RiwayatProduk:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          description: Daftar produk, diurutkan menurut SKU.
+          items:
+            $ref: "#/components/schemas/Produk"
+
+    Pesanan:
+      type: object
+      description: Satu pesanan beserta rincian itemnya.
+      required:
+        [id, kode, sumber, metode_bayar, pelanggan, status, total, terjadi_pada, items]
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 7
+        kode:
+          type: string
+          maxLength: 32
+          description: "Kode pesanan. Awalan `POS-` untuk kasir, `WA-` untuk WhatsApp."
+          example: POS-0007
+        sumber:
+          type: string
+          enum: [kasir, whatsapp]
+          description: Titik integrasi tempat pesanan ini masuk.
+          example: kasir
+        metode_bayar:
+          type: string
+          enum: [tunai, utang]
+          example: tunai
+        pelanggan:
+          type: string
+          nullable: true
+          maxLength: 100
+          description: Diisi untuk kasbon digital; `null` untuk transaksi tunai tanpa nama.
+          example: Pak Udin
+        status:
+          type: string
+          maxLength: 16
+          description: Status pesanan. Berbeda dari medan `status` pada `ProblemDetails`.
+          example: dikonfirmasi
+        total:
+          type: integer
+          minimum: 0
+          description: Total belanja dalam rupiah.
+          example: 144000
+        terjadi_pada:
+          type: string
+          format: date-time
+          example: "2026-10-31T06:47:12.000000Z"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-10-31T06:47:12.000000Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2026-10-31T06:47:12.000000Z"
+        items:
+          type: array
+          description: Rincian item tersimpan, lewat relasi `items`.
+          items:
+            $ref: "#/components/schemas/PesananItem"
+
+    PesananItem:
+      type: object
+      description: |
+        Baris item yang tersimpan di tabel `pesanan_item`.
+        **Berbeda dari** `RingkasItem` yang muncul pada balasan 201.
+      required: [id, pesanan_id, sku, jumlah, harga_satuan, subtotal, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 7
+        pesanan_id:
+          type: integer
+          format: int64
+          example: 7
+        sku:
+          type: string
+          maxLength: 16
+          example: BRG-001
+        jumlah:
+          type: integer
+          minimum: 1
+          example: 2
+        harga_satuan:
+          type: integer
+          minimum: 0
+          description: Nama kolomnya `harga_satuan`, bukan `harga`.
+          example: 72000
+        subtotal:
+          type: integer
+          minimum: 0
+          example: 144000
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-10-31T06:47:12.000000Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2026-10-31T06:47:12.000000Z"
+
+    RiwayatPesanan:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          description: Daftar pesanan, yang terbaru di urutan pertama.
+          items:
+            $ref: "#/components/schemas/Pesanan"
+
+    BarisItem:
+      type: object
+      description: Satu baris keranjang belanja pada permintaan.
+      required: [sku, jumlah]
+      properties:
+        sku:
+          type: string
+          maxLength: 16
+          example: BRG-001
+        jumlah:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          example: 2
+
+    PenjualanRequest:
+      type: object
+      description: |
+        Isian transaksi kasir. `kode` bersifat **opsional** — jika dikosongkan,
+        layanan membuat kode otomatis dengan pola `POS-0001`.
+      required: [metode_bayar, items]
+      properties:
+        kode:
+          type: string
+          maxLength: 32
+          description: Kode pesanan. Kosongkan untuk pembuatan otomatis.
+          example: POS-0007
+        pelanggan:
+          type: string
+          maxLength: 100
+          description: Diisi untuk kasbon digital (metode `utang`).
+          example: Pak Udin
+        metode_bayar:
+          type: string
+          enum: [tunai, utang]
+          example: tunai
+        items:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/BarisItem"
+
+    PesananWhatsappRequest:
+      type: object
+      description: |
+        Isian pesanan WhatsApp. Berbeda dari `PenjualanRequest`, di sini `kode`
+        **wajib diisi** pelanggan supaya pesanan bisa dirujuk saat konfirmasi.
+      required: [kode, metode_bayar, items]
+      properties:
+        kode:
+          type: string
+          maxLength: 32
+          description: Wajib unik. Pengulangan ditolak dengan 422.
+          example: WA-0001
+        pelanggan:
+          type: string
+          maxLength: 100
+          example: Bu Ani
+        metode_bayar:
+          type: string
+          enum: [tunai, utang]
+          example: tunai
+        items:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/BarisItem"
+
+    RingkasItem:
+      type: object
+      description: |
+        Ringkasan item pada balasan 201. Sengaja berbeda dari `PesananItem`:
+        memakai nama `harga`, bukan `harga_satuan`, dan tidak membawa
+        `id` maupun `pesanan_id`.
+      required: [sku, jumlah, harga, subtotal]
+      properties:
+        sku:
+          type: string
+          maxLength: 16
+          example: BRG-001
+        jumlah:
+          type: integer
+          minimum: 1
+          example: 2
+        harga:
+          type: integer
+          minimum: 0
+          example: 72000
+        subtotal:
+          type: integer
+          minimum: 0
+          example: 144000
+
+    PenjualanBerhasil:
+      type: object
+      description: Bentuk balasan 201 untuk kedua titik integrasi.
+      required: [status, kode, sumber, metode_bayar, total, items, pesan]
+      properties:
+        status:
+          type: string
+          enum: [dikonfirmasi]
+          example: dikonfirmasi
+        kode:
+          type: string
+          maxLength: 32
+          example: POS-0007
+        sumber:
+          type: string
+          enum: [kasir, whatsapp]
+          example: kasir
+        metode_bayar:
+          type: string
+          enum: [tunai, utang]
+          example: tunai
+        pelanggan:
+          type: string
+          nullable: true
+          maxLength: 100
+          example: Pak Udin
+        total:
+          type: integer
+          minimum: 0
+          example: 144000
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RingkasItem"
+        pesan:
+          type: string
+          description: Kalimat ramah yang menjelaskan langkah berikutnya.
+          example: Transaksi tercatat; pembaruan stok gudang berjalan di latar belakang.
+
+    ProblemDetails:
+      type: object
+      description: |
+        Galat RFC 7807 yang dipakai seluruh endpoint pada layanan ini.
+
+        Medan `type`, `title`, `status`, dan `detail` wajib ada. Medan lain
+        adalah perluasan yang hanya muncul pada jenis masalah tertentu.
+
+        `type` memakai empat nilai URN berikut:
+        - `urn:warung-kelontong:masalah:stok-rak-kasir-kurang`
+        - `urn:warung-kelontong:masalah:stok-gudang-kurang`
+        - `urn:warung-kelontong:masalah:layanan-tidak-terjangkau`
+        - `urn:warung-kelontong:masalah:isian-tidak-valid`
+      required: [type, title, status, detail]
+      properties:
+        type:
+          type: string
+          description: |
+            Pengenal jenis masalah sebagai URN. Nilai yang sah:
+            `urn:warung-kelontong:masalah:stok-rak-kasir-kurang`,
+            `urn:warung-kelontong:masalah:stok-gudang-kurang`,
+            `urn:warung-kelontong:masalah:layanan-tidak-terjangkau`,
+            `urn:warung-kelontong:masalah:isian-tidak-valid`.
+          example: urn:warung-kelontong:masalah:stok-rak-kasir-kurang
+        title:
+          type: string
+          description: Ringkasan singkat yang stabil untuk jenis masalah ini.
+          example: Stok Rak di Kasir Tidak Cukup
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+          description: Kode HTTP, selalu sama dengan status respons.
+          example: 409
+        detail:
+          type: string
+          description: Penjelasan spesifik untuk kejadian ini.
+          example: Stok rak di kasir tidak mencukupi untuk memenuhi pesanan ini.
+        instance:
+          type: string
+          description: URI permintaan yang memicu masalah.
+          example: /api/v1/penjualan
+        sisa_stok:
+          $ref: "#/components/schemas/RincianStok"
+        errors:
+          type: object
+          description: Pemetaan nama medan ke daftar pesan kesalahan. Hanya pada 422.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            metode_bayar:
+              - "The selected metode bayar is invalid."
+            items:
+              - "The items field is required."
+        saran:
+          type: string
+          description: Saran pemulihan untuk pemanggil. Hanya pada 503.
+          example: Kirim ulang pesanan (retry) — arsitektur RPC memiliki ketergantungan waktu.
+
+    RincianStok:
+      type: array
+      description: |
+        Rincian kekurangan stok per SKU. Nama `sisa_stok` dipakai menggantikan
+        `detail` karena `detail` sudah menjadi medan baku RFC 7807.
+
+        Pada 409 stok rak kasir memakai `stok_kasir`; pada 409 stok gudang
+        memakai `stok_gudang` dan `tersedia`.
+      items:
+        type: object
+        required: [sku]
+        properties:
+          sku:
+            type: string
+            maxLength: 16
+            example: BRG-001
+          stok_kasir:
+            type: integer
+            minimum: 0
+            description: Tersedia pada 409 stok rak kasir.
+            example: 1
+          stok_gudang:
+            type: integer
+            minimum: 0
+            description: Tersedia pada 409 stok gudang.
+            example: 1
+          diminta:
+            type: integer
+            minimum: 1
+            example: 5
+          tersedia:
+            type: boolean
+            description: Tersedia pada 409 stok gudang.
+            example: false
+
+  responses:
+    StokRakKasirKurang:
+      description: |
+        Salinan stok rak di kasir tidak mencukupi untuk memenuhi pesanan ini.
+        Pesanan tidak dicatat dan event tidak diterbitkan.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+          example:
+            type: urn:warung-kelontong:masalah:stok-rak-kasir-kurang
+            title: Stok Rak di Kasir Tidak Cukup
+            status: 409
+            detail: Stok rak di kasir tidak mencukupi untuk memenuhi pesanan ini.
+            instance: /api/v1/penjualan
+            sisa_stok:
+              - sku: BRG-001
+                stok_kasir: 1
+                diminta: 5
+
+    StokGudangKurang:
+      description: |
+        Inventory Core Service menjawab bahwa stok gudang tidak mencukupi.
+        Hanya mungkin pada gaya RPC (`pesanan-whatsapp`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+          example:
+            type: urn:warung-kelontong:masalah:stok-gudang-kurang
+            title: Stok Gudang Tidak Mencukupi
+            status: 409
+            detail: Stok gudang BRG-001 tidak mencukupi.
+            instance: /api/v1/pesanan-whatsapp
+            sisa_stok:
+              - sku: BRG-001
+                stok_gudang: 1
+                diminta: 2
+                tersedia: false
+
+    LayananTidakTerjangkau:
+      description: |
+        Inventory Core Service tidak bisa dihubungi, sehingga pesanan ditahan.
+        Inilah ketergantungan waktu gaya RPC yang tidak dimiliki gaya event-driven.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+          example:
+            type: urn:warung-kelontong:masalah:layanan-tidak-terjangkau
+            title: Layanan Stok Gudang Tidak Terjangkau
+            status: 503
+            detail: >-
+              Layanan stok tidak terjangkau (Inventory Service offline).
+              Pesanan ditahan, coba lagi beberapa detik lagi.
+            instance: /api/v1/pesanan-whatsapp
+            saran: Kirim ulang pesanan (retry) — arsitektur RPC memiliki ketergantungan waktu.
+
+    ValidasiGagal:
+      description: |
+        Isian permintaan tidak memenuhi aturan. Medan `errors` memetakan nama
+        medan ke daftar pesan kesalahannya.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+          example:
+            type: urn:warung-kelontong:masalah:isian-tidak-valid
+            title: Isian Permintaan Tidak Valid
+            status: 422
+            detail: Beberapa isian tidak memenuhi aturan. Periksa medan errors.
+            instance: /api/v1/penjualan
+            errors:
+              metode_bayar:
+                - "The selected metode bayar is invalid."
+              items:
+                - "The items field is required."

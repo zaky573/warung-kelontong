@@ -1,0 +1,27 @@
+extends:
+  - spectral:oas
+
+rules:
+  info-description:
+    description: Informasi API wajib memiliki deskripsi.
+    given: $.info
+    severity: error
+    then:
+      field: description
+      function: truthy
+
+  operation-description:
+    description: Setiap endpoint wajib memiliki deskripsi.
+    given: $.paths[*].*
+    severity: error
+    then:
+      field: description
+      function: truthy
+
+  operation-operationId:
+    description: Setiap operasi API wajib memiliki operationId.
+    given: $.paths[*].*
+    severity: error
+    then:
+      field: operationId
+      function: truthy
