@@ -19,6 +19,8 @@ services:
             IGNITION_LOCAL_SITES_PATH: '${PWD}'
         volumes:
             - '.:/var/www/html'
+            - './docker/supervisor/supervisord.conf:/etc/supervisor/conf.d/supervisord.conf:ro'
+            - './docker/supervisor/gudang-workers.conf:/etc/supervisor/conf.d/gudang-workers.conf:ro'
         networks:
             - sail
         depends_on:

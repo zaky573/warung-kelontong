@@ -20,27 +20,56 @@ class KonsumsiRekap extends Command
     {
         $koneksi = RabbitMQ::koneksi();
         $channel = $koneksi->channel();
+
         RabbitMQ::siapkanTopologi($channel);
 
-        $this->info('Menunggu pesan di antrean gudang.rekap. Tekan Ctrl+C untuk berhenti.');
+        $channel->basic_qos(0, 1, false);
 
-        $channel->basic_consume('gudang.rekap', '', false, false, false, false,
+        $this->info(
+            'Menunggu pesan di antrean gudang.rekap. Tekan Ctrl+C untuk berhenti.'
+        );
+
+        $channel->basic_consume(
+            'gudang.rekap',
+            '',
+            false,
+            false,
+            false,
+            false,
             function (AMQPMessage $pesan) use ($catat) {
                 try {
-                    $event = json_decode($pesan->getBody(), true, 512, JSON_THROW_ON_ERROR);
-                    $messageId = $pesan->has('message_id') ? $pesan->get('message_id') : '';
+                    $event = json_decode(
+                        $pesan->getBody(),
+                        true,
+                        512,
+                        JSON_THROW_ON_ERROR
+                    );
+
+                    $messageId = $pesan->has('message_id')
+                        ? $pesan->get('message_id')
+                        : '';
 
                     $baru = $catat($event, $messageId);
-                    $this->line(($baru ? 'Rekap tercatat   : ' : 'Duplikat dilewati : ').$pesan->getBody());
+
+                    $this->line(
+                        ($baru ? 'Rekap tercatat   : ' : 'Duplikat dilewati : ')
+                        . $pesan->getBody()
+                    );
+
                     $pesan->ack();
-                } catch (PesanTidakValid|JsonException $e) {
-                    $this->error('Ditolak: '.$e->getMessage());
+
+                } catch (PesanTidakValid | JsonException $e) {
+                    $this->error('Ditolak ke DLQ: ' . $e->getMessage());
+
                     $pesan->nack(false);
+
                 } catch (Throwable $e) {
-                    $this->error('Gagal: '.$e->getMessage());
+                    $this->error('Gagal memproses pesan: ' . $e->getMessage());
+
                     $pesan->nack(! $pesan->isRedelivered());
                 }
-            });
+            }
+        );
 
         $channel->consume();
 
